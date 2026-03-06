@@ -1,51 +1,65 @@
 ---
 name: codex-review
-version: 1.0.0
-description: "Three-tier code quality defense: L1 quick scan, L2 deep audit (triggers bug-audit), L3 cross-validation with adversarial testing. Orchestration layer that coordinates multiple AI reviewers without modifying underlying tools."
+description: "Three-tier code quality defense: L1 quick scan, L2 deep audit (via bug-audit), L3 cross-validation with adversarial testing. 三级代码质量防线。"
 metadata:
   { "openclaw": { "emoji": "🔍" } }
-tags:
-  - code-review
-  - quality-assurance
-  - bug-detection
-  - security-audit
-  - cross-validation
-  - ai-code-review
-  - nodejs
-  - openclaw-skill
-  - clawhub
-  - devops
 ---
 
-# Codex Review — Three-Tier Code Quality Defense 🔍
+# Codex Review — Three-Tier Code Quality Defense
 
-Unified orchestration layer: selects audit depth based on trigger words. Works standalone or coordinates with `bug-audit` skill for deep analysis.
+Unified orchestration layer: picks audit depth based on trigger phrases. bug-audit is invoked as an independent skill — never modified.
 
-## When to Activate
+## Prerequisites
 
-| User says | Level | What happens | Est. time |
+- **External model API** (OpenAI-compatible): for L1 quick scan & L3 cross-validation
+  - Set env vars or configure in your OpenClaw config:
+    - `CODEX_REVIEW_API_BASE` — API base URL (default: `https://api.openai.com/v1`)
+    - `CODEX_REVIEW_API_KEY` — your API key
+    - `CODEX_REVIEW_MODEL` — model name (default: `gpt-4o`)
+  - Any OpenAI-compatible API works (OpenAI, Azure, LiteLLM, Ollama, etc.)
+- **bug-audit skill** (optional): required for L2/L3. If not installed, L2 falls back to built-in deep audit.
+- **curl**: for API calls
+
+## Trigger Mapping
+
+| User says | Level | What it does | Est. time |
 |-----------|-------|--------------|-----------|
-| "review" / "quick check" / "review下" / "检查下" | L1 | Dual-model quick scan | 5-10 min |
-| "audit" / "deep check" / "审计下" / "排查下" | L2 | Full bug-audit flow | 30-60 min |
-| "pre-deploy check" / "上线前检查" | L1→L2 | L1 scan → hotspots → bug-audit → gap fill | 40-70 min |
-| "cross-validate" / "max check" / "交叉验证" | L3 | Independent dual audit + compare + adversarial | 60-90 min |
+| "review" / "quick scan" / "review下" / "检查下" | L1 | External model scan + agent deep pass | 5-10 min |
+| "audit" / "deep audit" / "审计下" / "排查下" | L2 | Full bug-audit flow (or built-in fallback) | 30-60 min |
+| "pre-deploy check" / "上线前检查" | L1→L2 | L1 scan → record hotspots → L2 audit → hotspot gap check | 40-70 min |
+| "cross-validate" / "highest level" / "交叉验证" / "最高级别检查" | L3 | Dual independent audits + compare + adversarial test | 60-90 min |
 
 ---
 
-## Level 1: Quick Scan (Core)
+## Level 1: Quick Scan (core of codex-review)
 
 ### Flow
-1. Gather code (local read or scp from server)
-2. Exclude: `node_modules/`, `.git/`, `package-lock.json`, `dist/`, `*.db`
-3. Send to a fast code-review model (e.g. Codex/GPT) — Round 1
-4. Self-review (Opus/Sonnet) — Round 2 deep supplement
-5. Merge, deduplicate, output graded report
-6. Write hotspot file for L1→L2 handoff
+1. **Gather code** — local `read`, `git clone <url>`, server scp, user-pasted snippet, or PR diff
+2. **Exclude** — node_modules/, .git/, package-lock.json, dist/, *.db, __pycache__/, vendor/
+3. **Round 1** — send to external model API for automated scan
+4. **Round 2** — current agent does deep supplementary pass
+5. **Merge & dedup** — output severity-graded report
+6. **Write hotspot file** (for L1→L2 handoff)
 
-### Round 1: Fast Model Scan
+### External Model API Call
+```bash
+curl -s "${CODEX_REVIEW_API_BASE:-https://api.openai.com/v1}/chat/completions" \
+  -H "Authorization: Bearer ${CODEX_REVIEW_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "${CODEX_REVIEW_MODEL:-gpt-4o}",
+    "messages": [
+      {"role": "system", "content": "<REVIEW_SYSTEM_PROMPT>"},
+      {"role": "user", "content": "<code content>"}
+    ],
+    "temperature": 0.2,
+    "max_tokens": 6000
+  }'
+```
 
-Use any available code-review API. System prompt:
+> **Fallback**: If API call fails or times out (120s), skip Round 1 and complete with agent-only audit.
 
+### System Prompt (L1 External Scan)
 ```
 You are an expert code reviewer. Find ALL bugs and security issues:
 1. CRITICAL — Security vulnerabilities (XSS, injection, auth bypass), crash bugs
@@ -54,31 +68,49 @@ You are an expert code reviewer. Find ALL bugs and security issues:
 4. LOW — Code style, dead code, minor improvements
 
 For each: Severity, File+line, Issue, Fix with code snippet.
-Focus on real bugs, not style nitpicks.
+Focus on real bugs, not style opinions. Output language: match the user's language.
 ```
 
-### Round 2: Self-Review Checklist
-- [ ] Cross-file logic consistency
-- [ ] Business logic exploits (anti-cheat bypass, negative balance, privilege escalation)
+### Agent Round 2 — Universal Checklist
+- [ ] Cross-file logic consistency (imports, exports, shared state)
+- [ ] Authentication & authorization bypass
 - [ ] Race conditions (concurrent requests, DB write conflicts)
-- [ ] Timezone issues (UTC vs local)
-- [ ] SQLite pitfalls (DEFAULT can't use functions, double-quotes = column names)
-- [ ] Nginx sub-path routing issues
-- [ ] WeChat WebView compatibility
-- [ ] API auth bypass vectors
-- [ ] Frontend XSS (unescaped innerHTML)
-- [ ] Node.js memory leaks (event listeners, unclosed streams)
+- [ ] Unhandled exceptions / missing error boundaries
+- [ ] Input validation & sanitization (SQL injection, XSS, path traversal)
+- [ ] Memory/resource leaks (unclosed connections, event listener buildup)
+- [ ] Sensitive data exposure (keys in code, logs, error messages)
+- [ ] Timezone handling (UTC vs local)
+- [ ] Dependency vulnerabilities (outdated packages, known CVEs)
+
+### Agent Round 2 — Tech-Stack Specific (auto-detect & apply)
+
+**Node.js/Express:**
+- [ ] SQLite pitfalls (DEFAULT doesn't support functions, double-quote = column name)
+- [ ] Middleware ordering (auth before route handlers)
+- [ ] pm2/cluster mode compatibility
+
+**Python/Django/Flask:**
+- [ ] ORM N+1 queries
+- [ ] CSRF protection enabled
+- [ ] Debug mode in production
+
+**Frontend (React/Vue/vanilla):**
+- [ ] innerHTML / dangerouslySetInnerHTML without sanitization
+- [ ] WebView compatibility (WeChat, in-app browsers)
+- [ ] Nginx sub-path / base URL issues
+
+**Other stacks:** adapt checklist to detected technology.
 
 ### Code Volume Control
-- Single request ≤ backend core files (server + routes + db + config)
-- Frontend in separate batch if needed
-- Use standard model, not high-compute variants (timeout risk)
+- Single API request: backend core files only (server + routes + db + config)
+- Send frontend as a second batch if needed
+- Very large projects (>50 files): summarize file tree first, then scan in priority order
 
-### Hotspot File (L1→L2 Handoff)
-After L1, write discovered issues to `/tmp/codex-review-hotspots.json`:
+### Hotspot File (L1→L2 handoff)
+After L1, write issue summary to `${TMPDIR:-/tmp}/codex-review-hotspots.json`:
 ```json
 {
-  "project": "example-project",
+  "project": "my-project",
   "timestamp": "2026-03-05T22:00:00",
   "hotspots": [
     {"file": "routes/admin.js", "severity": "CRITICAL", "brief": "Admin auth bypass via localhost"},
@@ -86,18 +118,24 @@ After L1, write discovered issues to `/tmp/codex-review-hotspots.json`:
   ]
 }
 ```
+This file is only used internally for L1→L2 handoff. bug-audit is unaware of it.
 
 ---
 
-## Level 2: Deep Audit (Delegates to bug-audit)
+## Level 2: Deep Audit
 
-### Flow
-1. Load and execute `bug-audit` SKILL.md in full (all 6 Phases)
-2. Zero modifications to bug-audit's own process
-3. Act as faithful executor of bug-audit's specification
+### Flow (bug-audit available)
+1. Read bug-audit's SKILL.md and execute its full flow (6 Phases)
+2. bug-audit itself is never modified
+3. Agent strictly follows bug-audit's specification
 
-### Trigger
-When user requests deep audit, read `bug-audit/SKILL.md` and follow strictly.
+### Flow (bug-audit NOT available — built-in fallback)
+1. **Phase 1: Project Dissection** — read all source files, build dependency graph
+2. **Phase 2: Build Check Matrix** — generate project-specific checklist from actual code patterns
+3. **Phase 3: Exhaustive Verification** — verify every checklist item against real code
+4. **Phase 4: Reproduce** — for each finding, trace the exact execution path
+5. **Phase 5: Report** — output full severity-graded report
+6. **Phase 6: Fix Suggestions** — provide concrete code patches
 
 ---
 
@@ -106,81 +144,91 @@ When user requests deep audit, read `bug-audit/SKILL.md` and follow strictly.
 ### Flow
 1. Execute L1 quick scan
 2. Write hotspot file
-3. Execute L2 (full bug-audit)
-4. **Post-audit gap analysis**:
+3. Execute L2 (bug-audit or fallback)
+4. After L2, **agent does hotspot gap analysis**:
    - Read hotspot file
-   - Check which L1 hotspots bug-audit already covered → mark "covered"
-   - Uncovered hotspots → targeted deep analysis, append to report
-   - Contradictions between L1 and L2 → flag for human review
-5. Output merged final report
+   - Check if L2 report covers each L1 hotspot
+   - Uncovered hotspots → targeted deep analysis, add to report
+   - L1 vs L2 conclusions conflict → flag for manual review
+5. Output final merged report
 
 ---
 
-## Level 3: Cross-Validation (Maximum)
+## Level 3: Cross-Validation (highest level)
 
 ### Flow
 ```
-Step 1: Model A — Independent audit
-  → Full code to fast review model, detailed prompt
+Step 1: External model independent audit
+  → Full code to external API with detailed system prompt
   → Output: Report A
 
-Step 2: Model B — Independent audit (bug-audit full flow)
-  → Execute bug-audit SKILL.md
+Step 2: Agent independent audit (bug-audit or fallback)
+  → Full bug-audit flow (or built-in fallback)
   → Output: Report B
 
 Step 3: Cross-compare
-  → Both found → 🔴 Confirmed high-risk (high confidence)
-  → Only A found → 🟡 B verifies (possible false positive)
-  → Only B found → 🟡 A verifies (possible deep logic bug)
-  → Contradictions → ⚠️ Deep analysis, render judgment
+  → Both found     → 🔴 Confirmed high-risk (high confidence)
+  → Only external   → 🟡 Agent verifies (possible false positive)
+  → Only agent      → 🟡 External verifies (possible deep logic bug)
+  → Contradictory   → ⚠️ Deep analysis, provide judgment
 
 Step 4: Adversarial testing
-  → Ask Model A to bypass the proposed fixes
-  → Prompt: "Given these fixes, find ways to bypass them"
+  → Ask external model to bypass discovered fixes
   → Validate fix robustness
 ```
 
 ### Adversarial Test Prompt
 ```
-You are a security researcher. The following security fixes were applied to a Node.js project.
+You are a security researcher. The following security fixes were applied to a project.
 For each fix, analyze:
 1. Can the fix be bypassed? How?
 2. Does the fix introduce new vulnerabilities?
 3. Are there edge cases the fix doesn't cover?
-Be adversarial and thorough.
+Be adversarial and thorough. Output language: match the user's language.
 ```
 
 ---
 
-## Report Format (All Levels)
+## Report Format (all levels)
 
 ```markdown
 # 🔍 Code Audit Report — [Project Name]
-## Audit Level: L1/L2/L3
-## 📊 Summary
+## Audit Level: L1 / L2 / L3
+## 📊 Overview
 - Files scanned: X
 - Issues found: X (🔴 Critical X | 🟠 High X | 🟡 Medium X | 🔵 Low X)
-- [L3 only] Cross-validation: Both agreed X | Only A X | Only B X | Contradictions X
+- [L3 only] Cross-validation: Both agreed X | External only X | Agent only X | Conflict X
 
 ## 🔴 Critical Issues
-### 1. [Issue title]
+### 1. [Issue Title]
 - **File**: `path/to/file.js:42-55`
-- **Found by**: Model A / Model B / Both
+- **Found by**: External model / Agent / Both
 - **Description**: ...
 - **Fix**:
 (code snippet)
 
 ## ✅ Highlights
-- [Things done well]
+- [What's done well]
 ```
+
+---
+
+## User Options
+
+Users can customize behavior by saying:
+- "only scan backend" / "只扫后端" → skip frontend files
+- "ignore LOW" / "忽略低级别" → filter out LOW severity
+- "output in English/Chinese" → control report language
+- "scan this PR" / "审这个PR" → fetch PR diff instead of full codebase
+- "skip external model" / "不用外部模型" → agent-only audit
 
 ---
 
 ## Notes
 
-1. API timeout: 120s per request. If fast model fails, skip its round — self-review covers
-2. Large projects: batch by layer (backend → frontend → config)
-3. Long reports: split across multiple messages
-4. L2/L3 bug-audit execution follows its SKILL.md exactly — no shortcuts
-5. Hotspot file is ephemeral, overwritten each L1 run
-6. **Works best with `bug-audit` skill installed** — L2/L3 depend on it
+1. External API timeout: 120 seconds. On failure, skip that round — agent completes independently
+2. Large projects: split into batches (backend → frontend → config)
+3. Long reports: split across multiple messages, adapted to current channel
+4. L2/L3 bug-audit execution strictly follows its own SKILL.md — no modifications or shortcuts
+5. Hotspot file is ephemeral — overwritten each L1 run, not persisted
+6. All secrets/keys must come from env vars or user config — never hardcoded in this skill
