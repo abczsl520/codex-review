@@ -84,6 +84,8 @@ L3: Cross-Validation
 - Input validation (SQL injection, XSS, path traversal)
 - Memory/resource leaks
 - Sensitive data exposure
+- Agent skill permission boundaries, especially approval gates for account or
+  social media actions
 - Timezone handling
 
 **Auto-detected tech-stack extras:**

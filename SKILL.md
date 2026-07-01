@@ -79,6 +79,8 @@ Focus on real bugs, not style opinions. Output language: match the user's langua
 - [ ] Input validation & sanitization (SQL injection, XSS, path traversal)
 - [ ] Memory/resource leaks (unclosed connections, event listener buildup)
 - [ ] Sensitive data exposure (keys in code, logs, error messages)
+- [ ] Agent skill permission boundaries (approval gates for account actions,
+      social media posting, follows, deletes, direct messages, and media uploads)
 - [ ] Timezone handling (UTC vs local)
 - [ ] Dependency vulnerabilities (outdated packages, known CVEs)
 
